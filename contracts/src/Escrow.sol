@@ -40,9 +40,16 @@ contract TempoEscrow is ReentrancyGuard {
 
     // -- Core Functions
 
+    /// @notice allows a user to lock funds into the contract to open an MPP session
+
+    function deposit() external payable {
+        require(msg.value > 0, "Deposit amount must be greater than zero");
+        userBalances[msg.sender] += msg.value;
+        emit Deposited(msg.sender, msg.value);
+    }
+
     /// @notice Allows a user to withdraw their unused funds.
     /// @param _amount the amount of wei to withdraw
-
     function withdraw(uint256 _amount) external nonReentrant {
         require(_amount > 0, "Withdrawl amount must be greater than zero");
         require(userBalances[msg.sender] => _amount, "Insufficient user balance");
@@ -55,3 +62,21 @@ contract TempoEscrow is ReentrancyGuard {
 
         emit Withdrawn(msg.sender, _amount);
     }
+
+    /// @notice Moves funds from a user balance to provider balance
+    /// @dev can Only be called by trusted TempoGate backend.
+    /// @param _user the address of the user who consumed the service.
+    /// @param _provider the address of the Ai agent/provider
+    /// @param _amount the settled cost of the session.
+    function payoutProvider(address _user, address _provider, uint256 _amount) external onlyTempoGate {
+        require(_amount > 0, "Payout amount must be greater than zero");
+        require(userBalances[_user] >= _amount, "insufficient user funds for payout")
+
+        // Internal accounting shift
+        userBalances[_user] -= _amount;
+        providerBalances[_provider] += _amount;
+
+        emit ProviderPaid(_user, _provider, _amount);
+    }
+
+    ///
