@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import "@openzeppeline/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @title Escrow Smart Contract
 /// @notice Manage stateful MPP session deposits and provider payout for tempo
 
 contract TempoEscrow is ReentrancyGuard {
-
     address public tempoGate; // The authorized Rust gateway that settles x402 vouchers
 
     // -- State Variables
@@ -19,14 +18,21 @@ contract TempoEscrow is ReentrancyGuard {
 
     event Deposited(address indexed user, uint256 amount);
     event Withdrawn(address indexed user, uint256 amount);
-    event ProviderPaid(address indexed user, uint256 indexed provider, uint256 amount);
+    event ProviderPaid(
+        address indexed user,
+        address indexed provider,
+        uint256 amount
+    );
     event ProviderWithdrawn(address indexed provider, uint256 amount);
 
-    // -- Modifiers 
+    // -- Modifiers
 
-    modifier onlyTempoGate() {
-        require(msg.sender == tempoGate, "Unauthorized: Only TempoGate can settle vouchers");
-        -;
+    modifier OnlyTempoGate() {
+        require(
+            msg.sender == tempoGate,
+            "Unauthorized: Only TempoGate can settle vouchers"
+        );
+        _;
     }
 
     // -- Constructor
@@ -34,7 +40,7 @@ contract TempoEscrow is ReentrancyGuard {
     /// @param _tempoGate the address of the trusted relayer/gateway.
 
     constructor(address _tempoGate) {
-        _require(_tempoGate != address(0), "Invalid gateway address");
+        require(_tempoGate != address(0), "Invalid gateway address");
         tempoGate = _tempoGate;
     }
 
@@ -52,7 +58,10 @@ contract TempoEscrow is ReentrancyGuard {
     /// @param _amount the amount of wei to withdraw
     function withdraw(uint256 _amount) external nonReentrant {
         require(_amount > 0, "Withdrawl amount must be greater than zero");
-        require(userBalances[msg.sender] => _amount, "Insufficient user balance");
+        require(
+            userBalances[msg.sender] >= _amount,
+            "Insufficient user balance"
+        );
 
         // Update state before external call to prevent reentrancy
         userBalances[msg.sender] -= _amount;
@@ -68,9 +77,16 @@ contract TempoEscrow is ReentrancyGuard {
     /// @param _user the address of the user who consumed the service.
     /// @param _provider the address of the Ai agent/provider
     /// @param _amount the settled cost of the session.
-    function payoutProvider(address _user, address _provider, uint256 _amount) external onlyTempoGate {
+    function payoutProvider(
+        address _user,
+        address _provider,
+        uint256 _amount
+    ) external onlyTempoGate {
         require(_amount > 0, "Payout amount must be greater than zero");
-        require(userBalances[_user] >= _amount, "insufficient user funds for payout")
+        require(
+            userBalances[_user] >= _amount,
+            "Insufficient user funds for payout"
+        );
 
         // Internal accounting shift
         userBalances[_user] -= _amount;
@@ -79,4 +95,24 @@ contract TempoEscrow is ReentrancyGuard {
         emit ProviderPaid(_user, _provider, _amount);
     }
 
-    ///
+    /// @notice allows a provider to withdraw their accumulated earnings.
+    function providerWithdraw() external nonReentrant {
+        uint256 amount = providerBalances[msg.sender];
+        require(amount > 0, "No funds avaliable to withdraw");
+
+        // Update state before external call
+        providerBalances[msg.sender] = 0;
+
+        (bool success, ) = payable(msg.sender).call{value: amount}("");
+        require(success, "Provider transfer failed");
+
+        emit ProviderWithdrawn(msg.sender, amount);
+    }
+
+    // -- Admin function
+    /// @notice Allows the current gateway to transfer it's role to a new address.
+    function updateTempoGate(address _newGate) external OnlyTempoGate {
+        require(_newGate != address(0), "Invalid new gateway address");
+        tempoGate = _newGate;
+    }
+}
