@@ -14,10 +14,36 @@ contract TempoEscrow is ReentrancyGuard {
     mapping(address => uint256) public userBalances;
     mapping(address => uint256) public providerBalances;
 
+    struct Session {
+        address user;
+        address provider;
+        uint256 allocatedAmount; // Max budget user authorize for this session
+        uint256 spentAmount;
+        bool isActive;
+    }
+
+    // sessionId maps to the session struct
+    mapping(byte32 => Session) public sessions;
+
     // -- Events
 
     event Deposited(address indexed user, uint256 amount);
     event Withdrawn(address indexed user, uint256 amount);
+    event SessionCreated(
+        bytes32 indexed sessionId,
+        address indexed user,
+        address indexed provider,
+        uint256 allocatedAmount
+    );
+    event SessionClosed(
+        bytes32 indexed sessionId,
+        uint256 unspentAmountReturned
+    );
+    event Settled(
+        bytes32 indexed sessionId,
+        address indexed provider,
+        uint256 amount
+    );
     event ProviderPaid(
         address indexed user,
         address indexed provider,
@@ -56,6 +82,7 @@ contract TempoEscrow is ReentrancyGuard {
 
     /// @notice Allows a user to withdraw their unused funds.
     /// @param _amount the amount of wei to withdraw
+
     function withdraw(uint256 _amount) external nonReentrant {
         require(_amount > 0, "Withdrawl amount must be greater than zero");
         require(
@@ -72,27 +99,83 @@ contract TempoEscrow is ReentrancyGuard {
         emit Withdrawn(msg.sender, _amount);
     }
 
-    /// @notice Moves funds from a user balance to provider balance
-    /// @dev can Only be called by trusted TempoGate backend.
-    /// @param _user the address of the user who consumed the service.
-    /// @param _provider the address of the Ai agent/provider
-    /// @param _amount the settled cost of the session.
-    function payoutProvider(
-        address _user,
+    // -- SESSION STORAGE
+
+    /// @notice Opens a new MPP session, reserving a specific amount of the user's balance.
+    /// @param _sessionId The unique identifier for the session.
+    /// @param _provider The address of the AI agent/provider.
+    /// @param _allocatedAmount The max budget locked for this session.
+
+    function createSession(
+        bytes32 _sessionId,
         address _provider,
-        uint256 _amount
+        uint256 _allocatedAmount
     ) external onlyTempoGate {
-        require(_amount > 0, "Payout amount must be greater than zero");
+        require(!sessions[_sessionId].isActive, "Session already exists");
+        require(_allocateAmount > 0, "Allocation Must be > 0");
         require(
-            userBalances[_user] >= _amount,
+            userBalances[msg.sender] >= _allocatedAmount,
             "Insufficient user funds for payout"
         );
 
-        // Internal accounting shift
-        userBalances[_user] -= _amount;
-        providerBalances[_provider] += _amount;
+        // Internal accounting shift, locking funds until spent or returned.
+        userBalances[msg.sender] -= _allocatedAmount;
+        sessions[_sessionId] = Session({
+            user: msg.sender,
+            provider: _provider,
+            allocatedAmount: _allocatedAmount,
+            spentAmount: 0,
+            isActive: true
+        });
 
-        emit ProviderPaid(_user, _provider, _amount);
+        emit SessionCreated(
+            _sessionId,
+            msg.sender,
+            _provider,
+            _allocatedAmount
+        );
+    }
+
+    /// @notice Settles an x402 voucher, moving funds from the session to the provider.
+    /// @dev Replaces payoutProvider. Can only be called by the trusted TempoGate backend.
+    /// @param _sessionId The unique identifier for the active session.
+    /// @param _amount The settled cost of the session iteration to pay the provider.
+
+    function settle(byte32 _sessionId, uint256 _amount) external onlyTempoGate {
+        Session storage session = sessions[_sessionId];
+        require(session.isActive, "Session is not active");
+        require(_amount > 0, "Settle amount must be > 0");
+        require(
+            session.spentAmount + _amount <= session.allocatedAmount,
+            "Exceeded session budget"
+        );
+
+        session.spentAmount += _amount;
+        providerBalances[session.provider] += _amount;
+
+        emit Settled(_sessionId, session.provider, _amount);
+    }
+
+    /// @notice Closes a session and refunds any unspent allocated funds back to the user.
+    /// @param _sessionId The unique identifier for the session to close.
+
+    function closeSession(byte32 _sessionId) external {
+        Session storage session = sessions[_sessionId];
+        require(session.isActive, "Session already closed");
+        require(
+            msg.sender == session.user || msg.sender == tempoGate,
+            "Unauthorized"
+        );
+
+        session.isActive = false;
+
+        uint256 unspent = session.allocatedAmount - session.spentAmount;
+
+        if (unspent > 0) {
+            userBalances[session.user] += unspent; // lock is released
+        }
+
+        emit SessionClosed(_sessionId, unspent);
     }
 
     /// @notice allows a provider to withdraw their accumulated earnings.
