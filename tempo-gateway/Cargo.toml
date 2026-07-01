@@ -10,3 +10,4 @@ reqwest = { version = "0.12", features = ["json"] }
 tower = "0.4"
 tower-http = { version = "0.5", features = ["trace"] }
 http = "1.0"
+ethers = { version = "2.0", features = ["abigen"] }
